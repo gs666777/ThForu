@@ -1164,30 +1164,106 @@ class _CodeBlockWidget extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Container(
-        width: double.infinity,
-        decoration: decoration,
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (language.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Text(
-                  language,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.primary,
-                    fontWeight: FontWeight.w600,
+      child: GestureDetector(
+        onTap: () => _openFullscreen(context, codeStyle),
+        child: Container(
+          width: double.infinity,
+          decoration: decoration,
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (language.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        language,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const Spacer(),
+                      Icon(Icons.zoom_in, size: 13,
+                          color: theme.colorScheme.outline),
+                    ],
                   ),
                 ),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: SelectableText(
+                  code,
+                  style: codeStyle,
+                ),
               ),
-            SelectableText(
-              code,
-              style: codeStyle,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _openFullscreen(BuildContext context, TextStyle codeStyle) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => _CodeViewerPage(
+          code: code,
+          language: language,
+          codeStyle: codeStyle,
+          theme: theme,
+        ),
+      ),
+    );
+  }
+}
+
+class _CodeViewerPage extends StatelessWidget {
+  final String code;
+  final String language;
+  final TextStyle codeStyle;
+  final ThemeData theme;
+
+  const _CodeViewerPage({
+    required this.code,
+    required this.language,
+    required this.codeStyle,
+    required this.theme,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: theme.colorScheme.surfaceContainerHighest,
+      appBar: AppBar(
+        title: Text(language.isNotEmpty ? language : '代码'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.close),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ],
+      ),
+      body: InteractiveViewer(
+        maxScale: 5.0,
+        minScale: 0.5,
+        child: Center(
+          child: Container(
+            margin: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              borderRadius: BorderRadius.circular(8),
             ),
-          ],
+            child: SelectableText(
+              code,
+              style: codeStyle.copyWith(fontSize: 14),
+            ),
+          ),
         ),
       ),
     );
