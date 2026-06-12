@@ -841,6 +841,53 @@ class _InlineRichSegment extends StatelessWidget {
     }).join('\n');
   }
 
+  /// Open blockquote content in fullscreen viewer
+  void _openBlockquoteFullscreen(BuildContext context, String content, TextStyle baseStyle) {
+    final theme = Theme.of(context);
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => Scaffold(
+          backgroundColor: theme.colorScheme.surface,
+          appBar: AppBar(
+            title: const Text('引用'),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ],
+          ),
+          body: InteractiveViewer(
+            maxScale: 5.0,
+            minScale: 0.5,
+            child: Center(
+              child: Container(
+                margin: const EdgeInsets.all(16),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  border: Border(
+                    left: BorderSide(
+                      color: theme.colorScheme.primary.withValues(alpha: 0.4),
+                      width: 3,
+                    ),
+                  ),
+                ),
+                child: MathMarkdown(
+                  data: content,
+                  selectable: true,
+                  styleSheet: MarkdownStyleSheet(
+                    p: baseStyle.copyWith(fontSize: 16),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// Detect headings / list markers that we can strip ourselves.
   static bool _hasListOrHeading(String t) {
     final lines = t.split('\n');
@@ -1018,7 +1065,6 @@ class _InlineRichSegment extends StatelessWidget {
           final rendered = _buildInlineWrap(stripped, baseStyle, linkColor);
           return Container(
             margin: const EdgeInsets.symmetric(vertical: 4),
-            padding: const EdgeInsets.only(left: 12),
             decoration: BoxDecoration(
               border: Border(
                 left: BorderSide(
@@ -1027,7 +1073,35 @@ class _InlineRichSegment extends StatelessWidget {
                 ),
               ),
             ),
-            child: rendered,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Zoom button
+                GestureDetector(
+                  onTap: () => _openBlockquoteFullscreen(context, stripped, baseStyle),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.zoom_in, size: 14,
+                            color: theme.colorScheme.primary),
+                        const SizedBox(width: 4),
+                        Text('放大', style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.primary,
+                        )),
+                      ],
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(left: 12),
+                  child: rendered,
+                ),
+              ],
+            ),
           );
         }
 
@@ -1164,44 +1238,64 @@ class _CodeBlockWidget extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
-      child: GestureDetector(
-        onTap: () => _openFullscreen(context, codeStyle),
-        child: Container(
-          width: double.infinity,
-          decoration: decoration,
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (language.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        language,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: theme.colorScheme.primary,
-                          fontWeight: FontWeight.w600,
-                        ),
+      child: Container(
+        width: double.infinity,
+        decoration: decoration,
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Top bar with language + zoom button
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Row(
+                children: [
+                  if (language.isNotEmpty)
+                    Text(
+                      language,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.primary,
+                        fontWeight: FontWeight.w600,
                       ),
-                      const Spacer(),
-                      Icon(Icons.zoom_in, size: 13,
-                          color: theme.colorScheme.outline),
-                    ],
+                    ),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: () => _openFullscreen(context, codeStyle),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primary.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.zoom_in, size: 14,
+                              color: theme.colorScheme.primary),
+                          const SizedBox(width: 4),
+                          Text('放大', style: theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.primary,
+                          )),
+                        ],
+                      ),
+                    ),
                   ),
-                ),
-              SingleChildScrollView(
+                ],
+              ),
+            ),
+            // Code content with horizontal scroll
+            Padding(
+              padding: const EdgeInsets.only(left: 12, right: 12, bottom: 12),
+              child: SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 child: SelectableText(
                   code,
                   style: codeStyle,
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
