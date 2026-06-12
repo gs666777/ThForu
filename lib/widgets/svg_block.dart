@@ -160,7 +160,6 @@ class _SvgViewer extends StatefulWidget {
 class _SvgViewerState extends State<_SvgViewer> {
   ui.Image? _image;
   bool _failed = false;
-  final _transformationController = TransformationController();
 
   @override
   void initState() {
@@ -206,7 +205,6 @@ class _SvgViewerState extends State<_SvgViewer> {
 
   @override
   void dispose() {
-    _transformationController.dispose();
     _image?.dispose();
     super.dispose();
   }
@@ -225,33 +223,19 @@ class _SvgViewerState extends State<_SvgViewer> {
         ],
       ),
       body: _image != null
-          ? LayoutBuilder(
-              builder: (context, constraints) {
-                final screenW = constraints.maxWidth;
-                final screenH = constraints.maxHeight;
-                final imgW = _image!.width.toDouble();
-                final imgH = _image!.height.toDouble();
-                // Scale to fit within screen, maintaining aspect ratio
-                final fitScale = (screenW / imgW).clamp(0.0, (screenH / imgH).clamp(0.01, double.infinity));
-                final s = fitScale.clamp(0.01, 1.0);
-                // Center the image
-                final tx = (screenW - imgW * s) / 2;
-                final ty = (screenH - imgH * s) / 2;
-                _transformationController.value = Matrix4.identity()
-                  ..translate(tx, ty)
-                  ..scale(s, s);
-                return InteractiveViewer(
-                  transformationController: _transformationController,
-                  maxScale: 20.0,
-                  minScale: 0.1,
-                  constrained: false,
+          ? InteractiveViewer(
+              maxScale: 20.0,
+              minScale: 0.1,
+              child: Center(
+                child: FittedBox(
+                  fit: BoxFit.contain,
                   child: SizedBox(
-                    width: imgW,
-                    height: imgH,
+                    width: _image!.width.toDouble(),
+                    height: _image!.height.toDouble(),
                     child: RawImage(image: _image),
                   ),
-                );
-              },
+                ),
+              ),
             )
           : _failed
               ? const Center(child: Text('SVG 解析失败'))
