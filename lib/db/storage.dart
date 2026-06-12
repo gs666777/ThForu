@@ -3,15 +3,25 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class Storage {
   static Storage? _instance;
+  static Future<Storage>? _pendingInit;
   late final SharedPreferences _prefs;
 
   Storage._();
 
   static Future<Storage> get instance async {
     if (_instance != null) return _instance!;
-    _instance = Storage._();
-    _instance!._prefs = await SharedPreferences.getInstance();
-    return _instance!;
+    if (_pendingInit != null) return _pendingInit!;
+    _pendingInit = _doInit();
+    final storage = await _pendingInit!;
+    _pendingInit = null;
+    return storage;
+  }
+
+  static Future<Storage> _doInit() async {
+    final storage = Storage._();
+    storage._prefs = await SharedPreferences.getInstance();
+    _instance = storage;
+    return storage;
   }
 
   // -- Conversations --
