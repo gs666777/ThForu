@@ -80,11 +80,21 @@ class _ChatInputBarState extends ConsumerState<ChatInputBar> {
   }
 
   Future<void> _pickImages() async {
-    final imageService = ref.read(imageServiceProvider);
-    final paths = await imageService.pickFromGallery();
-    if (paths.isNotEmpty) {
-      setState(() => _selectedImages.addAll(paths));
-    }
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: true,
+      );
+      if (result != null && result.files.isNotEmpty) {
+        final paths = result.files
+            .where((f) => f.path != null)
+            .map((f) => f.path!)
+            .toList();
+        if (paths.isNotEmpty) {
+          setState(() => _selectedImages.addAll(paths));
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _takePhoto() async {
