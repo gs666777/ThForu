@@ -148,7 +148,7 @@ class _SvgBlockState extends State<SvgBlock> {
   }
 }
 
-/// Fullscreen SVG viewer — renders at high resolution, pinch-to-zoom.
+/// Fullscreen SVG viewer — renders at screen resolution, pinch-to-zoom.
 class _SvgViewer extends StatefulWidget {
   final String svgString;
   const _SvgViewer({required this.svgString});
@@ -180,8 +180,12 @@ class _SvgViewerState extends State<_SvgViewer> {
         if (mounted) setState(() => _failed = true);
         return;
       }
-      // Render at 2x for sharp zoom
-      final maxW = 1200.0;
+      // Render at 2x screen width for sharp zoom
+      final screenW = MediaQueryData.fromView(
+              WidgetsBinding.instance.platformDispatcher.views.first)
+          .size
+          .width;
+      final maxW = screenW * 2;
       final scale = maxW / svgSize.width;
       final w = (svgSize.width * scale).round();
       final h = (svgSize.height * scale).round();
@@ -227,8 +231,10 @@ class _SvgViewerState extends State<_SvgViewer> {
                 final screenH = constraints.maxHeight;
                 final imgW = _image!.width.toDouble();
                 final imgH = _image!.height.toDouble();
-                final fitScale = (screenW / imgW).clamp(0.01, (screenH / imgH).clamp(0.01, double.infinity));
-                final s = fitScale.clamp(0.1, 1.0);
+                // Scale to fit within screen, maintaining aspect ratio
+                final fitScale = (screenW / imgW).clamp(0.0, (screenH / imgH).clamp(0.01, double.infinity));
+                final s = fitScale.clamp(0.01, 1.0);
+                // Center the image
                 final tx = (screenW - imgW * s) / 2;
                 final ty = (screenH - imgH * s) / 2;
                 _transformationController.value = Matrix4.identity()
