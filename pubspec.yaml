@@ -28,6 +28,7 @@ dependencies:
   flutter_slidable: ^3.1.0
   file_picker: ^8.0.0
   wakelock_plus: ^1.2.0
+  saver_gallery: ^3.0.6
 
 dev_dependencies:
   flutter_test:

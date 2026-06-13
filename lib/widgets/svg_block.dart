@@ -1,9 +1,11 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:saver_gallery/saver_gallery.dart';
 
 /// Renders SVG as a bitmap thumbnail in the chat bubble.
 /// Tap to open fullscreen with pinch-to-zoom.
@@ -76,15 +78,22 @@ class _SvgBlockState extends State<SvgBlock> {
   Future<void> _downloadSvg() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      final svgDir = Directory(p.join(dir.path, 'svg'));
-      if (!await svgDir.exists()) await svgDir.create(recursive: true);
       final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final file = File(p.join(svgDir.path, 'svg_$timestamp.svg'));
+      final file = File(p.join(dir.path, 'svg_$timestamp.svg'));
       await file.writeAsString(widget.svgString);
+
+      final bytes = await file.readAsBytes();
+      final result = await SaverGallery.saveImage(
+        bytes,
+        quality: 100,
+        fileName: 'svg_$timestamp.svg',
+        skipIfExists: false,
+      );
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('已保存到 ${file.path}'),
+            content: Text(result.isSuccess ? '已保存到相册' : '保存失败'),
             duration: const Duration(seconds: 2),
           ),
         );

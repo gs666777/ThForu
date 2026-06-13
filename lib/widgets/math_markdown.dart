@@ -215,9 +215,26 @@ class _TableBlock extends StatelessWidget {
 
     final headerBg = theme.colorScheme.primaryContainer.withValues(alpha: 0.18);
 
+    // Calculate column widths proportional to max content length per column.
+    // Uses FlexColumnWidth to avoid IntrinsicColumnWidth + LayoutBuilder conflict.
+    final allRows = [headers, ...normBodyRows];
+    final colLengths = List<double>.generate(colCount, (c) {
+      double maxLen = 0;
+      for (final row in allRows) {
+        if (c < row.length && row[c].length > maxLen) {
+          maxLen = row[c].length.toDouble();
+        }
+      }
+      return maxLen < 1 ? 1 : maxLen;
+    });
+    final totalLen = colLengths.fold(0.0, (a, b) => a + b);
+
     return Table(
-      defaultColumnWidth: const IntrinsicColumnWidth(),
       defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+      columnWidths: {
+        for (int c = 0; c < colCount; c++)
+          c: FlexColumnWidth(colLengths[c] / totalLen),
+      },
       border: TableBorder(
         horizontalInside: BorderSide(
           color: theme.dividerColor.withValues(alpha: 0.3),
