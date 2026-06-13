@@ -361,7 +361,7 @@ class _MathCell extends StatelessWidget {
       }
 
       // Plain text cells (no formulas) → render as Text directly.
-      if (!content.contains(r'$')) {
+      if (!content.contains(r'$') && !content.contains(r'\(')) {
         return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
           child: Text(content, style: style, softWrap: true),
@@ -399,10 +399,12 @@ class _MathCell extends StatelessWidget {
 /// Convert cell content to a LaTeX inline-math expression.
 ///
 /// `$E=mc^2$`   → `E=mc^2`
+/// `\(E=mc^2\)` → `E=mc^2`
 /// `点电荷`       → `\text{点电荷}`
 /// `电场 $E$ 强度` → `\text{电场 }\,E\,\text{ 强度}`
 String _cellToLatex(String cell) {
-  final re = RegExp(r'\$(.+?)\$');
+  // Support both $...$ and \( ... \) formats
+  final re = RegExp(r'\$(.+?)\$|\\\((.+?)\\\)');
   final parts = <String>[];
   int pos = 0;
   for (final m in re.allMatches(cell)) {
@@ -412,7 +414,9 @@ String _cellToLatex(String cell) {
         parts.add(r'\text{' '$text' '}');  // adjacent literals → one string
       }
     }
-    parts.add(_cleanFormula(m.group(1)!).trim());
+    // Get formula from whichever group matched
+    final formula = m.group(1) ?? m.group(2) ?? '';
+    parts.add(_cleanFormula(formula).trim());
     pos = m.end;
   }
   if (pos < cell.length) {
