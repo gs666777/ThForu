@@ -102,7 +102,9 @@ class _FavoritesScreenState extends ConsumerState<FavoritesScreen> with RouteAwa
                         onPressed: () async {
                           final dao = ref.read(messageDaoProvider);
                           await dao.toggleFavorite(convId, msgId);
-                          _load();
+                          setState(() {
+                            _favorites?.removeWhere((e) => e['id'] == msgId);
+                          });
                         },
                       ),
                       onTap: () {

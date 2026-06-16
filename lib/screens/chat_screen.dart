@@ -32,6 +32,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with RouteAware {
   String? _followUpMessageId;
   final _messageKeys = <String, GlobalKey>{};
   bool _userScrolledUp = false;
+  String? _lastSentText;
+  List<String>? _lastSentImages;
+  String? _lastSentFilePath;
+  String? _lastSentFileName;
+  bool _errorExpanded = false;
 
   @override
   void initState() {
@@ -319,13 +324,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with RouteAware {
                                   ],
                                 ),
                                 const SizedBox(height: 4),
-                                Text(
-                                  snippet,
+                                Text.rich(
+                                  TextSpan(
+                                    children: _buildHighlightedSpans(snippet, _searchQuery, theme),
+                                    style: theme.textTheme.bodySmall,
+                                  ),
                                   maxLines: 4,
-                                  overflow:
-                                      TextOverflow.ellipsis,
-                                  style:
-                                      theme.textTheme.bodySmall,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ],
                             ),
@@ -341,6 +346,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with RouteAware {
         ],
       ],
     );
+  }
+
+  List<TextSpan> _buildHighlightedSpans(String text, String query, ThemeData theme) {
+    if (query.isEmpty) return [TextSpan(text: text)];
+    final spans = <TextSpan>[];
+    final lowerText = text.toLowerCase();
+    final lowerQuery = query.toLowerCase();
+    int pos = 0;
+    while (pos < text.length) {
+      final matchIdx = lowerText.indexOf(lowerQuery, pos);
+      if (matchIdx < 0) {
+        spans.add(TextSpan(text: text.substring(pos)));
+        break;
+      }
+      if (matchIdx > pos) {
+        spans.add(TextSpan(text: text.substring(pos, matchIdx)));
+      }
+      spans.add(TextSpan(
+        text: text.substring(matchIdx, matchIdx + query.length),
+        style: TextStyle(
+          color: theme.colorScheme.primary,
+          backgroundColor: theme.colorScheme.primaryContainer,
+          fontWeight: FontWeight.w600,
+        ),
+      ));
+      pos = matchIdx + query.length;
+    }
+    return spans;
   }
 
   @override
@@ -527,15 +560,45 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with RouteAware {
             children: [
               if (chatState.errorMessage != null)
                 MaterialBanner(
-                  content: Text(chatState.errorMessage!),
+                  content: GestureDetector(
+                    onTap: () => setState(() => _errorExpanded = !_errorExpanded),
+                    child: Text(
+                      _errorExpanded || chatState.errorMessage!.length < 80
+                          ? chatState.errorMessage!
+                          : '${chatState.errorMessage!.substring(0, 80)}...',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
                   backgroundColor: theme.colorScheme.errorContainer,
                   actions: [
+                    if (_lastSentText != null)
+                      FilledButton(
+                        onPressed: () {
+                          final text = _lastSentText!;
+                          final images = _lastSentImages;
+                          final filePath = _lastSentFilePath;
+                          final fileName = _lastSentFileName;
+                          ref.read(chatProvider(widget.conversationId).notifier).clearError();
+                          setState(() {
+                            _errorExpanded = false;
+                            _lastSentText = null;
+                            _lastSentImages = null;
+                            _lastSentFilePath = null;
+                            _lastSentFileName = null;
+                          });
+                          final notifier = ref.read(chatProvider(widget.conversationId).notifier);
+                          if (isExpertMode && expertPanel != null && gatewayConfig != null) {
+                            notifier.sendExpertMessage(panel: expertPanel, expertConfigs: expertConfigs, gatewayConfig: gatewayConfig, text: text, imagePaths: images, filePath: filePath, fileName: fileName);
+                          } else if (provider != null) {
+                            notifier.sendMessage(providerConfig: provider, text: text, imagePaths: images, filePath: filePath, fileName: fileName);
+                          }
+                        },
+                        child: const Text('重试'),
+                      ),
                     TextButton(
                       onPressed: () {
-                        ref
-                            .read(chatProvider(widget.conversationId)
-                                .notifier)
-                            .clearError();
+                        ref.read(chatProvider(widget.conversationId).notifier).clearError();
+                        setState(() { _errorExpanded = false; });
                       },
                       child: const Text('关闭'),
                     ),
@@ -630,6 +693,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with RouteAware {
                     String? fileName,
                     bool? deepSearch,
                   }) async {
+                    _lastSentText = text;
+                    _lastSentImages = imagePaths;
+                    _lastSentFilePath = filePath;
+                    _lastSentFileName = fileName;
                     final replyTo = _followUpMessageId;
                     final replyPreview = _followUpContext;
                     final notifier = ref.read(

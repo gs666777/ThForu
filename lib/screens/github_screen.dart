@@ -31,6 +31,24 @@ class _ScoredFile {
   _ScoredFile({required this.repo, required this.file, required this.score});
 }
 
+class _TreeNode {
+  final String name;
+  final String fullPath;
+  final bool isDir;
+  Map<String, dynamic>? file;
+  final Map<String, _TreeNode> children = {};
+  _TreeNode({required this.name, required this.isDir, this.file, this.fullPath = ''});
+
+  int get descendantFileCount {
+    int count = 0;
+    for (final child in children.values) {
+      if (!child.isDir) count++;
+      else count += child.descendantFileCount;
+    }
+    return count;
+  }
+}
+
 class GitHubScreen extends ConsumerStatefulWidget {
   const GitHubScreen({super.key});
   @override
@@ -53,6 +71,7 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
   final List<_ChatMsg> _chatMessages = [];
   bool _chatStreaming = false;
   AIProviderConfig? _chatProvider;
+  final Set<String> _collapsedFolders = {};
 
   static const _codeExtensions = {
     'dart','java','kt','py','js','ts','jsx','tsx','c','cpp','h','hpp',
@@ -200,6 +219,35 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
     } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('加载失败: $e'))); }
   }
 
+  Future<void> _refreshRepo(Map<String, dynamic> repo) async {
+    setState(() => _connectingStatus = '正在刷新文件树...');
+    try {
+      final dio = Dio(BaseOptions(connectTimeout: const Duration(seconds: 20), receiveTimeout: const Duration(seconds: 30)));
+      final headers = <String, String>{'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'ThForu'};
+      final token = repo['token'] as String?;
+      if (token != null && token.isNotEmpty) headers['Authorization'] = 'token $token';
+      final branch = repo['branch'] ?? 'main';
+      final resp = await dio.get('https://api.github.com/repos/${repo['owner']}/${repo['repo']}/git/trees/$branch?recursive=1', options: Options(headers: headers));
+      if (resp.statusCode == 200) {
+        final blobs = (resp.data['tree'] as List).where((t) => t['type'] == 'blob' && _codeExtensions.contains(t['path'].split('.').last.toLowerCase())).toList();
+        final files = <Map<String, dynamic>>[];
+        for (final b in blobs.take(100)) {
+          files.add({'path': b['path'], 'size': b['size'] ?? 0, 'sha': b['sha']});
+        }
+        repo['files'] = files;
+        repo['fileCount'] = files.length;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('github_repos', jsonEncode(_repos));
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已刷新 ${files.length} 个文件')));
+        }
+      }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('刷新失败: $e')));
+    }
+    setState(() => _connectingStatus = null);
+  }
+
   Future<void> _deleteRepo(Map<String, dynamic> repo) async {
     final confirm = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
       title: const Text('删除仓库'), content: Text('确定删除 ${repo['id']}？'),
@@ -320,6 +368,9 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
             }
             _chatMessages.add(_ChatMsg(role: 'assistant', content: fullContent));
           });
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (_chatScrollCtrl.hasClients) _chatScrollCtrl.jumpTo(_chatScrollCtrl.position.maxScrollExtent);
+          });
         }
       } else {
         // No repos connected, normal chat
@@ -337,6 +388,9 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
               _chatMessages.removeLast();
             }
             _chatMessages.add(_ChatMsg(role: 'assistant', content: fullContent));
+          });
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (_chatScrollCtrl.hasClients) _chatScrollCtrl.jumpTo(_chatScrollCtrl.position.maxScrollExtent);
           });
         }
       }
@@ -366,7 +420,12 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
       appBar: AppBar(
         title: Text(_showingTree ? (activeRepo.isNotEmpty ? activeRepo.first['id'] ?? '文件树' : '文件树') : 'GitHub 代码库'),
         leading: _showingTree ? IconButton(icon: const Icon(Icons.arrow_back), onPressed: () => setState(() { _showingTree = false; _selectedFile = null; })) : null,
-        actions: [if (!_showingTree) IconButton(icon: const Icon(Icons.link), tooltip: '连接仓库', onPressed: _connectingStatus != null ? null : _connectRepo)],
+        actions: [
+          if (!_showingTree)
+            IconButton(icon: const Icon(Icons.link), tooltip: '连接仓库', onPressed: _connectingStatus != null ? null : _connectRepo),
+          if (_showingTree && activeRepo.isNotEmpty)
+            IconButton(icon: const Icon(Icons.refresh), tooltip: '刷新文件树', onPressed: _connectingStatus != null ? null : () => _refreshRepo(activeRepo.first)),
+        ],
       ),
       body: _connectingStatus != null
           ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [const CircularProgressIndicator(), const SizedBox(height: 16), Text(_connectingStatus!)]))
@@ -386,7 +445,12 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
               if (_selectedFile == null)
                 FloatingActionButton.small(heroTag: 'tree', onPressed: () => setState(() => _showingTree = !_showingTree), child: Icon(_showingTree ? Icons.list : Icons.account_tree)),
               if (_selectedFile == null) const SizedBox(height: 8),
-              FloatingActionButton(heroTag: 'chat', onPressed: () => setState(() => _showChat = true), child: const Icon(Icons.chat)),
+              FloatingActionButton(heroTag: 'chat', onPressed: () {
+                setState(() => _showChat = true);
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (_chatScrollCtrl.hasClients) _chatScrollCtrl.jumpTo(_chatScrollCtrl.position.maxScrollExtent);
+                });
+              }, child: const Icon(Icons.chat)),
             ])
           : null,
       bottomSheet: _showChat ? _buildChatSheet(theme) : null,
@@ -425,21 +489,82 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
   }
 
   Widget _buildFileList(ThemeData theme, List<Map<String, dynamic>> files) {
+    if (files.isEmpty) return const Center(child: Text('没有匹配的文件'));
+
+    // Build nested tree node structure
+    final root = _TreeNode(name: '', isDir: true, fullPath: '');
+    for (final f in files) {
+      final parts = (f['path'] as String).split('/');
+      var node = root;
+      for (int i = 0; i < parts.length; i++) {
+        final name = parts[i];
+        final isLast = i == parts.length - 1;
+        final fullPath = parts.sublist(0, i + 1).join('/');
+        if (!node.children.containsKey(name)) {
+          node.children[name] = _TreeNode(name: name, isDir: !isLast, fullPath: fullPath);
+        }
+        if (isLast) {
+          node.children[name]!.file = f;
+        }
+        node = node.children[name]!;
+      }
+    }
+
+    // Flatten tree into display items based on expanded state
+    final items = <Map<String, dynamic>>[];
+    void _flatten(_TreeNode node, int depth) {
+      final sorted = node.children.entries.toList()..sort((a, b) {
+        if (a.value.isDir && !b.value.isDir) return -1;
+        if (!a.value.isDir && b.value.isDir) return 1;
+        return a.key.compareTo(b.key);
+      });
+      for (final entry in sorted) {
+        final child = entry.value;
+        if (child.isDir) {
+          final collapsed = _collapsedFolders.contains(child.fullPath);
+          final fileCount = child.descendantFileCount;
+          items.add({'type': 'folder', 'path': child.fullPath, 'name': child.name, 'depth': depth, 'fileCount': fileCount});
+          if (!collapsed) _flatten(child, depth + 1);
+        } else {
+          items.add({'type': 'file', 'data': child.file!, 'depth': depth});
+        }
+      }
+    }
+    _flatten(root, 0);
+
     return Column(children: [
       Padding(padding: const EdgeInsets.all(12), child: TextField(
         decoration: const InputDecoration(hintText: '搜索文件名...', prefixIcon: Icon(Icons.search, size: 20), contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 10)),
         onChanged: (v) => setState(() => _fileSearchQuery = v),
       )),
-      Expanded(child: files.isEmpty ? const Center(child: Text('没有匹配的文件')) : ListView.builder(
-        itemCount: files.length,
+      Expanded(child: items.isEmpty ? const Center(child: Text('没有匹配的文件')) : ListView.builder(
+        itemCount: items.length,
         itemBuilder: (ctx, i) {
-          final f = files[i];
+          final item = items[i];
+          if (item['type'] == 'folder') {
+            final collapsed = _collapsedFolders.contains(item['path']);
+            return ListTile(
+              leading: Icon(collapsed ? Icons.folder : Icons.folder_open, size: 20, color: Colors.amber),
+              title: Text(item['name'] as String, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+              subtitle: Text('${item['fileCount']} 个文件', style: theme.textTheme.bodySmall, maxLines: 1),
+              contentPadding: EdgeInsets.only(left: 12.0 + (item['depth'] as int) * 16.0),
+              dense: true,
+              onTap: () => setState(() {
+                if (collapsed) _collapsedFolders.remove(item['path']);
+                else _collapsedFolders.add(item['path']);
+              }),
+            );
+          }
+          final f = item['data'] as Map<String, dynamic>;
           final lang = _detectLang(f['path'] as String);
+          final fileName = (f['path'] as String).split('/').last;
           return ListTile(
             leading: Icon(_fileIcon(f['path'] as String), size: 20, color: _fileIconColor(lang)),
-            title: Text(f['path'].split('/').last, style: const TextStyle(fontSize: 14)),
-            subtitle: Text('${f['path']}  ·  $lang', style: theme.textTheme.bodySmall, maxLines: 1, overflow: TextOverflow.ellipsis),
-            dense: true, onTap: () => _loadFileContent(f),
+            title: Text(fileName, style: const TextStyle(fontSize: 14)),
+            subtitle: Text(f['path'] as String, style: theme.textTheme.bodySmall, maxLines: 1, overflow: TextOverflow.ellipsis),
+            contentPadding: EdgeInsets.only(left: 12.0 + (item['depth'] as int) * 16.0),
+            dense: true,
+            onTap: () => _loadFileContent(f),
           );
         },
       )),
@@ -492,6 +617,9 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
                 setState(() {
                   _showChat = true;
                   _chatInputCtrl.text = '这段代码是什么意思？\n\n```\n$selected\n```';
+                });
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (_chatScrollCtrl.hasClients) _chatScrollCtrl.jumpTo(_chatScrollCtrl.position.maxScrollExtent);
                 });
               } else {
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('请先长按选中代码')));

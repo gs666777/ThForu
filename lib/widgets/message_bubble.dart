@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import '../models/message.dart';
 import 'math_markdown.dart';
+import 'streaming_cursor.dart';
 
 class MessageBubble extends StatelessWidget {
   final Message message;
@@ -45,24 +46,8 @@ class MessageBubble extends StatelessWidget {
           children: [
             if (message.content.isNotEmpty) ...[
               ListTile(
-                leading: const Icon(Icons.replay),
-                title: const Text('追问'),
-                subtitle: Text(
-                  message.content.length > 50
-                      ? '${message.content.substring(0, 50)}...'
-                      : message.content,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  onFollowUp?.call(message.content, message.id);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.copy_all),
-                title: const Text('复制全部'),
+                leading: const Icon(Icons.copy),
+                title: const Text('复制文本'),
                 onTap: () {
                   Navigator.pop(ctx);
                   Clipboard.setData(ClipboardData(text: message.content));
@@ -72,6 +57,25 @@ class MessageBubble extends StatelessWidget {
                       duration: Duration(seconds: 1),
                     ),
                   );
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.replay),
+                title: const Text('引用回复'),
+                subtitle: Text(
+                  message.content.length > 200
+                      ? '${message.content.substring(0, 200)}...'
+                      : message.content,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  final preview = message.content.length > 200
+                      ? '${message.content.substring(0, 200)}...'
+                      : message.content;
+                  onFollowUp?.call(preview, message.id);
                 },
               ),
             ],
@@ -423,10 +427,17 @@ class _StreamingContent extends StatelessWidget {
 
     if (splitAt < 0) {
       return RepaintBoundary(
-        child: MathMarkdown(
-          data: content,
-          selectable: true,
-          styleSheet: mdStyle,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            MathMarkdown(
+              data: content,
+              selectable: true,
+              styleSheet: mdStyle,
+            ),
+            const StreamingCursor(),
+          ],
         ),
       );
     }
@@ -445,9 +456,10 @@ class _StreamingContent extends StatelessWidget {
               styleSheet: mdStyle,
             ),
           ),
-        Text(tailPart,
-            style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurface)),
+        Text.rich(TextSpan(children: [
+          TextSpan(text: tailPart),
+          const WidgetSpan(child: StreamingCursor()),
+        ], style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurface))),
       ],
     );
   }
