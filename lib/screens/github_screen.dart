@@ -38,7 +38,6 @@ class _TreeNode {
   Map<String, dynamic>? file;
   final Map<String, _TreeNode> children = {};
   _TreeNode({required this.name, required this.isDir, this.file, this.fullPath = ''});
-
   int get descendantFileCount {
     int count = 0;
     for (final child in children.values) {
@@ -72,6 +71,9 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
   bool _chatStreaming = false;
   AIProviderConfig? _chatProvider;
   final Set<String> _collapsedFolders = {};
+  bool _showFileSearch = false;
+  final _fileSearchCtrl = TextEditingController();
+  List<Map<String, dynamic>> _fileSearchResults = [];
 
   static const _codeExtensions = {
     'dart','java','kt','py','js','ts','jsx','tsx','c','cpp','h','hpp',
@@ -90,8 +92,49 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
     return map[ext] ?? ext.toUpperCase();
   }
 
+  // ==================== Chat History Persistence ====================
+
+  String get _chatHistoryKey {
+    final ids = _repos.where((r) => r['status'] == 'done').map((r) => r['id'] as String).toList()..sort();
+    return 'github_chat_${ids.join("_")}';
+  }
+
+  Future<void> _loadChatHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final json = prefs.getString(_chatHistoryKey);
+    if (json != null) {
+      final list = (jsonDecode(json) as List).cast<Map<String, dynamic>>();
+      setState(() {
+        _chatMessages.clear();
+        _chatMessages.addAll(list.map((m) => _ChatMsg(role: m['role'] as String, content: m['content'] as String)));
+      });
+    }
+  }
+
+  Future<void> _saveChatHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final trimmed = _chatMessages.length > 50 ? _chatMessages.sublist(_chatMessages.length - 50) : _chatMessages;
+    final json = jsonEncode(trimmed.map((m) => {'role': m.role, 'content': m.content}).toList());
+    await prefs.setString(_chatHistoryKey, json);
+  }
+
+  // ==================== State ====================
+
   @override
-  void initState() { super.initState(); _loadRepos(); }
+  void initState() {
+    super.initState();
+    _loadRepos();
+    _loadChatHistory();
+  }
+
+  @override
+  void dispose() {
+    _saveChatHistory();
+    _chatInputCtrl.dispose();
+    _chatScrollCtrl.dispose();
+    _fileSearchCtrl.dispose();
+    super.dispose();
+  }
 
   Future<void> _loadRepos() async {
     final prefs = await SharedPreferences.getInstance();
@@ -101,9 +144,7 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
       final list = (jsonDecode(json) as List).cast<Map<String, dynamic>>();
       final valid = list.where((r) => r['files'] != null && (r['files'] as List).isNotEmpty && r['status'] == 'done').toList();
       final removedCount = list.length - valid.length;
-      if (removedCount > 0) {
-        await prefs.setString('github_repos', jsonEncode(valid));
-      }
+      if (removedCount > 0) await prefs.setString('github_repos', jsonEncode(valid));
       String? validActiveId = activeId;
       if (validActiveId != null && !valid.any((r) => r['id'] == validActiveId)) {
         validActiveId = null;
@@ -112,6 +153,8 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
       if (mounted) setState(() { _repos = valid; _activeRepoId = validActiveId; _loading = false; });
     } else if (mounted) setState(() { _loading = false; });
   }
+
+  // ==================== Repo Management ====================
 
   Future<void> _connectRepo() async {
     final ownerCtrl = TextEditingController();
@@ -141,14 +184,8 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
     if (result == null) return;
     setState(() => _connectingStatus = '正在连接...');
     try {
-      final dio = Dio(BaseOptions(
-        connectTimeout: const Duration(seconds: 20),
-        receiveTimeout: const Duration(seconds: 30),
-      ));
-      final headers = <String, String>{
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'ThForu',
-      };
+      final dio = Dio(BaseOptions(connectTimeout: const Duration(seconds: 20), receiveTimeout: const Duration(seconds: 30)));
+      final headers = <String, String>{'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'ThForu'};
       final token = result['token'] ?? '';
       if (token.isNotEmpty) headers['Authorization'] = 'token $token';
       final owner = result['owner']!;
@@ -167,19 +204,17 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
         } catch (_) {
           masterResp = Response(requestOptions: RequestOptions(path: ''), statusCode: 0);
         }
-        if (masterResp.statusCode == 200) {
-          branch = 'master';
-        }
+        if (masterResp.statusCode == 200) branch = 'master';
       }
       final treeResp = branch == 'master' ? masterResp! : mainResp;
       if (treeResp.statusCode == 401) throw Exception('Token 无效，请检查后重试');
-      if (treeResp.statusCode == 403) throw Exception('API 速率限制 (匿名60次/小时)，请填写 Token');
-      if (treeResp.statusCode == 404) throw Exception('仓库不存在或无访问权限，请检查 Owner/Repo 和 Token');
-      if (treeResp.statusCode == 0) throw Exception('网络连接失败，请检查网络或代理设置');
-      if (treeResp.statusCode != 200) throw Exception('GitHub API 错误: HTTP ${treeResp.statusCode}');
+      if (treeResp.statusCode == 403) throw Exception('API 速率限制，请填写 Token');
+      if (treeResp.statusCode == 404) throw Exception('仓库不存在或无访问权限');
+      if (treeResp.statusCode == 0) throw Exception('网络连接失败，请检查网络');
+      if (treeResp.statusCode != 200) throw Exception('HTTP ${treeResp.statusCode}');
       final blobs = (treeResp.data['tree'] as List).where((t) => t['type'] == 'blob' && _codeExtensions.contains(t['path'].split('.').last.toLowerCase())).toList();
       final files = <Map<String, dynamic>>[];
-      for (final b in blobs.take(50)) {
+      for (final b in blobs.take(100)) {
         files.add({'path': b['path'], 'size': b['size'] ?? 0, 'sha': b['sha']});
       }
       final repoData = {
@@ -193,30 +228,14 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
       await prefs.setString('github_repos', jsonEncode(_repos));
       _activeRepoId = repoData['id'] as String;
       await prefs.setString('github_active_repo_id', _activeRepoId!);
+      _loadChatHistory();
       if (mounted) { setState(() => _connectingStatus = null); _loadRepos(); ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已连接 ${repoData['id']} (${files.length} 个文件)'))); }
     } catch (e) {
       String msg = '连接失败: $e';
-      if (e.toString().contains('SocketException')) msg = '网络连接失败，请检查网络或代理设置';
-      else if (e.toString().contains('Connection timed out')) msg = '连接超时，请检查网络或使用 Token';
-      else if (e.toString().contains('403')) msg = 'API 速率限制 (匿名60次/小时)，请填写 Token';
-      else if (e.toString().contains('404')) msg = '仓库不存在，请检查 Owner 和 Repo 名称';
+      if (e.toString().contains('SocketException')) msg = '网络连接失败';
+      else if (e.toString().contains('timed out')) msg = '连接超时';
       if (mounted) { setState(() => _connectingStatus = null); ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg))); }
     }
-  }
-
-  Future<void> _loadFileContent(Map<String, dynamic> file) async {
-    final repo = _repos.firstWhere((r) => r['id'] == _activeRepoId);
-    final token = repo['token'] as String?;
-    final branch = repo['branch'] ?? 'main';
-    final headers = <String, String>{'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'ThForu'};
-    if (token != null) headers['Authorization'] = 'token $token';
-    try {
-      final resp = await Dio().get('https://api.github.com/repos/${repo['owner']}/${repo['repo']}/contents/${file['path']}?ref=$branch', options: Options(headers: headers));
-      if (resp.statusCode == 200 && resp.data['content'] != null) {
-        final content = utf8.decode(base64Decode(resp.data['content'].replaceAll('\n', '')));
-        setState(() { _selectedFile = _RepoFile(path: file['path'], content: content, size: file['size'], language: _detectLang(file['path'])); });
-      }
-    } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('加载失败: $e'))); }
   }
 
   Future<void> _refreshRepo(Map<String, dynamic> repo) async {
@@ -238,9 +257,7 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
         repo['fileCount'] = files.length;
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('github_repos', jsonEncode(_repos));
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已刷新 ${files.length} 个文件')));
-        }
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('已刷新 ${files.length} 个文件')));
       }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('刷新失败: $e')));
@@ -261,13 +278,38 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
       await prefs.setString('github_repos', jsonEncode(_repos));
       await prefs.remove('github_active_repo_id');
       _loadRepos();
+      _loadChatHistory();
     }
   }
 
-  bool _isCodeRelated(String text) {
-    final kw = ['代码','函数','文件','类','方法','变量','bug','fix','feature','实现','逻辑','模块','接口','API','组件','错误','调试','code','class','function','import','package','build','config','repo','仓库','源码','源代码'];
-    final lower = text.toLowerCase();
-    return kw.any((k) => lower.contains(k));
+  // ==================== File Loading ====================
+
+  Future<void> _loadFileContent(Map<String, dynamic> file) async {
+    final repo = _repos.firstWhere((r) => r['id'] == _activeRepoId);
+    final token = repo['token'] as String?;
+    final branch = repo['branch'] ?? 'main';
+    final headers = <String, String>{'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'ThForu'};
+    if (token != null) headers['Authorization'] = 'token $token';
+    try {
+      final resp = await Dio().get('https://api.github.com/repos/${repo['owner']}/${repo['repo']}/contents/${file['path']}?ref=$branch', options: Options(headers: headers));
+      if (resp.statusCode == 200 && resp.data['content'] != null) {
+        final content = utf8.decode(base64Decode(resp.data['content'].replaceAll('\n', '')));
+        setState(() { _selectedFile = _RepoFile(path: file['path'], content: content, size: file['size'], language: _detectLang(file['path'])); _showingTree = true; });
+      }
+    } catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('加载失败: $e'))); }
+  }
+
+  Future<void> _openFileByPath(String filePath) async {
+    for (final repo in _repos.where((r) => r['status'] == 'done')) {
+      final repoFiles = (repo['files'] as List).cast<Map<String, dynamic>>();
+      final match = repoFiles.where((f) => (f['path'] as String) == filePath).toList();
+      if (match.isNotEmpty) {
+        _activeRepoId = repo['id'] as String;
+        await _loadFileContent(match.first);
+        return;
+      }
+    }
+    if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('文件 $filePath 不在已缓存的仓库中')));
   }
 
   Future<String?> _fetchFileContent(String repoId, Map<String, dynamic> file) async {
@@ -288,11 +330,14 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
     return null;
   }
 
+  // ==================== Chat Send (Multi-repo Agent) ====================
+
   Future<void> _chatSend() async {
     final text = _chatInputCtrl.text.trim();
     if (text.isEmpty) return;
     _chatInputCtrl.clear();
     setState(() { _chatMessages.add(_ChatMsg(role: 'user', content: text)); _chatStreaming = true; });
+    _saveChatHistory();
 
     final providers = ref.read(providerListProvider);
     final provider = _chatProvider ?? (providers.isNotEmpty ? providers.first : null);
@@ -302,23 +347,18 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
     final aiService = AiService(provider);
 
     try {
-      // Build file tree for all connected repos
       String fileTree = '';
       for (final repo in doneRepos) {
         final repoFiles = (repo['files'] as List).cast<Map<String, dynamic>>();
-        final paths = repoFiles.map((f) => f['path'] as String).toList();
-        paths.sort();
-        fileTree += '\n仓库 [${repo['id']}] (${paths.length} 个文件):\n';
-        fileTree += paths.join('\n');
-        fileTree += '\n';
+        final paths = repoFiles.map((f) => f['path'] as String).toList()..sort();
+        fileTree += '\n仓库 [${repo['id']}] (${paths.length} 个文件):\n${paths.join('\n')}\n';
       }
 
       if (fileTree.isNotEmpty) {
-        // Step 1: Agent — AI sees file tree, picks files to read
-        final planPrompt = '你是代码分析 Agent。用户有一个或多个 GitHub 仓库连接。\n'
-            '以下是仓库的完整文件目录树：\n$fileTree\n'
+        final planPrompt = '你是代码分析 Agent。用户有一个或多个 GitHub 仓库连接。你可以跨仓库引用文件。\n'
+            '以下是所有仓库的完整文件目录树：\n$fileTree\n'
             '用户问题：$text\n\n'
-            '请根据用户问题，列出你需要读取的文件路径（每行一个文件路径，只写路径，不要编号或解释）。'
+            '请根据用户问题，列出你需要读取的文件路径（每行一个，格式: [仓库ID] 文件路径，如 [owner/repo] lib/main.dart）。'
             '最多选择 8 个最相关的文件。如果问题与代码无关，回复"无"。';
 
         String planResult = '';
@@ -326,34 +366,37 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
           planResult += chunk;
         }
 
-        // Parse AI's file selections
-        final selectedPaths = planResult.split('\n')
-            .map((l) => l.trim().replaceAll(RegExp(r'^\d+[\.\)、]\s*'), '').replaceAll('`', '').trim())
-            .where((l) => l.isNotEmpty && l != '无' && l.contains('/') && l.length < 200)
-            .toList();
-
-        // Step 2: Fetch selected files and answer
-        final codeBuffer = StringBuffer();
-        codeBuffer.writeln('[仓库代码]\n');
-        for (final path in selectedPaths) {
-          for (final repo in doneRepos) {
-            final repoFiles = (repo['files'] as List).cast<Map<String, dynamic>>();
-            final match = repoFiles.where((f) => (f['path'] as String) == path).toList();
-            if (match.isNotEmpty) {
-              final content = await _fetchFileContent(repo['id'] as String, match.first);
-              if (content != null) {
-                codeBuffer.writeln('--- [${repo['id']}] $path ---');
-                codeBuffer.writeln(content);
-                codeBuffer.writeln();
-              }
+        final selectedPaths = <_ScoredFile>[];
+        final lineRe = RegExp(r'\[(\S+)\]\s+(\S+)');
+        for (final line in planResult.split('\n')) {
+          final m = lineRe.firstMatch(line.trim());
+          if (m != null) {
+            final repoId = m.group(1)!;
+            final filePath = m.group(2)!;
+            for (final repo in doneRepos) {
+              if (repo['id'] != repoId) continue;
+              final repoFiles = (repo['files'] as List).cast<Map<String, dynamic>>();
+              final match = repoFiles.where((f) => (f['path'] as String) == filePath).toList();
+              if (match.isNotEmpty) selectedPaths.add(_ScoredFile(repo: repoId, file: match.first, score: 1));
               break;
             }
           }
         }
 
-        final systemPrompt = '你是代码助手，帮助用户理解 GitHub 仓库中的代码。用中文回答。\n'
-            '以下是用户仓库中与问题相关的代码：\n${codeBuffer.toString()}\n'
-            '请基于以上代码内容回答用户问题。引用具体的文件路径和代码。';
+        final codeBuffer = StringBuffer();
+        codeBuffer.writeln('[仓库代码]\n');
+        for (final sf in selectedPaths.take(8)) {
+          final content = await _fetchFileContent(sf.repo, sf.file);
+          if (content != null) {
+            codeBuffer.writeln('--- [${sf.repo}] ${sf.file['path']} ---');
+            codeBuffer.writeln(content);
+            codeBuffer.writeln();
+          }
+        }
+
+        final systemPrompt = '你是代码助手，帮助用户理解 GitHub 仓库中的代码。你可以跨仓库引用代码。用中文回答。\n'
+            '以下是与问题相关的代码：\n${codeBuffer.toString()}\n'
+            '请基于以上代码回答。引用文件路径时使用 [仓库ID] 文件路径 格式，如 [owner/repo] lib/main.dart。';
 
         String fullContent = '';
         final history = <Message>[Message(conversationId: '', role: 'system', content: systemPrompt)];
@@ -363,9 +406,7 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
         await for (final chunk in aiService.streamChat(history: history, newUserMessage: text)) {
           fullContent += chunk;
           setState(() {
-            if (_chatMessages.isNotEmpty && _chatMessages.last.role == 'assistant') {
-              _chatMessages.removeLast();
-            }
+            if (_chatMessages.isNotEmpty && _chatMessages.last.role == 'assistant') _chatMessages.removeLast();
             _chatMessages.add(_ChatMsg(role: 'assistant', content: fullContent));
           });
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -373,20 +414,15 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
           });
         }
       } else {
-        // No repos connected, normal chat
         String fullContent = '';
-        final history = <Message>[
-          Message(conversationId: '', role: 'system', content: '你是代码助手。用中文回答。'),
-        ];
+        final history = <Message>[Message(conversationId: '', role: 'system', content: '你是代码助手。用中文回答。')];
         final recent = _chatMessages.where((m) => m != _chatMessages.last).toList();
         for (final m in recent) { history.add(Message(conversationId: '', role: m.role, content: m.content)); }
 
         await for (final chunk in aiService.streamChat(history: history, newUserMessage: text)) {
           fullContent += chunk;
           setState(() {
-            if (_chatMessages.isNotEmpty && _chatMessages.last.role == 'assistant') {
-              _chatMessages.removeLast();
-            }
+            if (_chatMessages.isNotEmpty && _chatMessages.last.role == 'assistant') _chatMessages.removeLast();
             _chatMessages.add(_ChatMsg(role: 'assistant', content: fullContent));
           });
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -398,14 +434,31 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
     } catch (e) {
       setState(() { _chatMessages.add(_ChatMsg(role: 'assistant', content: '错误: $e')); _chatStreaming = false; });
     }
+    _saveChatHistory();
     if (_chatScrollCtrl.hasClients) _chatScrollCtrl.jumpTo(_chatScrollCtrl.position.maxScrollExtent);
   }
+
+  // ==================== File Search for @file ====================
+
+  void _searchFilesForMention(String query) {
+    if (query.isEmpty) { setState(() { _fileSearchResults = []; _showFileSearch = false; }); return; }
+    final allFiles = <Map<String, dynamic>>[];
+    for (final repo in _repos.where((r) => r['status'] == 'done')) {
+      for (final f in (repo['files'] as List).cast<Map<String, dynamic>>()) {
+        allFiles.add({...f, 'repoId': repo['id']});
+      }
+    }
+    final q = query.toLowerCase();
+    final results = allFiles.where((f) => (f['path'] as String).toLowerCase().contains(q)).take(8).toList();
+    setState(() { _fileSearchResults = results; _showFileSearch = results.isNotEmpty; });
+  }
+
+  // ==================== Build ====================
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    // Auto-recover from stale state: if showing tree but repo is gone, reset
     if (_showingTree && _activeRepoId != null && !_repos.any((r) => r['id'] == _activeRepoId)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         setState(() { _showingTree = false; _selectedFile = null; _activeRepoId = null; });
@@ -440,13 +493,13 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
               : _showingTree
                   ? (_selectedFile != null ? _buildCodeView(theme) : _buildFileList(theme, filteredFiles))
                   : _buildRepoList(theme, activeRepo),
-      floatingActionButton: activeRepo.isNotEmpty && activeRepo.first['status'] == 'done' && !_showChat
+      floatingActionButton: activeRepo.isNotEmpty && activeRepo.first['status'] == 'done' && !_showChat && _selectedFile == null
           ? Column(mainAxisSize: MainAxisSize.min, children: [
-              if (_selectedFile == null)
-                FloatingActionButton.small(heroTag: 'tree', onPressed: () => setState(() => _showingTree = !_showingTree), child: Icon(_showingTree ? Icons.list : Icons.account_tree)),
-              if (_selectedFile == null) const SizedBox(height: 8),
+              FloatingActionButton.small(heroTag: 'tree', onPressed: () => setState(() => _showingTree = !_showingTree), child: Icon(_showingTree ? Icons.list : Icons.account_tree)),
+              const SizedBox(height: 8),
               FloatingActionButton(heroTag: 'chat', onPressed: () {
                 setState(() => _showChat = true);
+                _loadChatHistory();
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (_chatScrollCtrl.hasClients) _chatScrollCtrl.jumpTo(_chatScrollCtrl.position.maxScrollExtent);
                 });
@@ -457,11 +510,13 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
     );
   }
 
+  // ==================== Repo List ====================
+
   Widget _buildRepoList(ThemeData theme, List<Map<String, dynamic>> activeRepo) {
     if (_repos.isEmpty) return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
       Icon(Icons.cloud_off, size: 64, color: theme.colorScheme.outline), const SizedBox(height: 16),
       Text('暂无连接的仓库', style: theme.textTheme.titleMedium), const SizedBox(height: 24),
-      FilledButton.icon(onPressed: _connectRepo, icon: const Icon(Icons.add), label: const Text('连接仓库 (支持匿名)')),
+      FilledButton.icon(onPressed: _connectRepo, icon: const Icon(Icons.add), label: const Text('连接仓库')),
     ]));
     return ListView.builder(
       padding: const EdgeInsets.all(16), itemCount: _repos.length + 1,
@@ -488,10 +543,10 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
     );
   }
 
+  // ==================== File List (Tree) ====================
+
   Widget _buildFileList(ThemeData theme, List<Map<String, dynamic>> files) {
     if (files.isEmpty) return const Center(child: Text('没有匹配的文件'));
-
-    // Build nested tree node structure
     final root = _TreeNode(name: '', isDir: true, fullPath: '');
     for (final f in files) {
       final parts = (f['path'] as String).split('/');
@@ -503,14 +558,10 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
         if (!node.children.containsKey(name)) {
           node.children[name] = _TreeNode(name: name, isDir: !isLast, fullPath: fullPath);
         }
-        if (isLast) {
-          node.children[name]!.file = f;
-        }
+        if (isLast) node.children[name]!.file = f;
         node = node.children[name]!;
       }
     }
-
-    // Flatten tree into display items based on expanded state
     final items = <Map<String, dynamic>>[];
     void _flatten(_TreeNode node, int depth) {
       final sorted = node.children.entries.toList()..sort((a, b) {
@@ -522,8 +573,7 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
         final child = entry.value;
         if (child.isDir) {
           final collapsed = _collapsedFolders.contains(child.fullPath);
-          final fileCount = child.descendantFileCount;
-          items.add({'type': 'folder', 'path': child.fullPath, 'name': child.name, 'depth': depth, 'fileCount': fileCount});
+          items.add({'type': 'folder', 'path': child.fullPath, 'name': child.name, 'depth': depth, 'fileCount': child.descendantFileCount});
           if (!collapsed) _flatten(child, depth + 1);
         } else {
           items.add({'type': 'file', 'data': child.file!, 'depth': depth});
@@ -546,7 +596,7 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
             return ListTile(
               leading: Icon(collapsed ? Icons.folder : Icons.folder_open, size: 20, color: Colors.amber),
               title: Text(item['name'] as String, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
-              subtitle: Text('${item['fileCount']} 个文件', style: theme.textTheme.bodySmall, maxLines: 1),
+              subtitle: Text('${item['fileCount']} 个文件', style: theme.textTheme.bodySmall),
               contentPadding: EdgeInsets.only(left: 12.0 + (item['depth'] as int) * 16.0),
               dense: true,
               onTap: () => setState(() {
@@ -557,10 +607,9 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
           }
           final f = item['data'] as Map<String, dynamic>;
           final lang = _detectLang(f['path'] as String);
-          final fileName = (f['path'] as String).split('/').last;
           return ListTile(
             leading: Icon(_fileIcon(f['path'] as String), size: 20, color: _fileIconColor(lang)),
-            title: Text(fileName, style: const TextStyle(fontSize: 14)),
+            title: Text((f['path'] as String).split('/').last, style: const TextStyle(fontSize: 14)),
             subtitle: Text(f['path'] as String, style: theme.textTheme.bodySmall, maxLines: 1, overflow: TextOverflow.ellipsis),
             contentPadding: EdgeInsets.only(left: 12.0 + (item['depth'] as int) * 16.0),
             dense: true,
@@ -570,6 +619,8 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
       )),
     ]);
   }
+
+  // ==================== Code View ====================
 
   Widget _buildCodeView(ThemeData theme) {
     final file = _selectedFile!;
@@ -596,9 +647,7 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
               final text = file.content ?? '';
               final start = selection.start;
               final end = selection.end.clamp(0, text.length);
-              if (start >= 0 && start < end) {
-                _selectedCodeText = text.substring(start, end);
-              }
+              if (start >= 0 && start < end) _selectedCodeText = text.substring(start, end);
             }
           },
         ),
@@ -616,8 +665,9 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
               if (selected.isNotEmpty && selected != file.content) {
                 setState(() {
                   _showChat = true;
-                  _chatInputCtrl.text = '这段代码是什么意思？\n\n```\n$selected\n```';
+                  _chatInputCtrl.text = '(文件: ${file.path}) 这段代码是什么意思？\n\n```\n$selected\n```';
                 });
+                _loadChatHistory();
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   if (_chatScrollCtrl.hasClients) _chatScrollCtrl.jumpTo(_chatScrollCtrl.position.maxScrollExtent);
                 });
@@ -631,6 +681,8 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
       ),
     ]);
   }
+
+  // ==================== Chat Sheet ====================
 
   Widget _buildChatSheet(ThemeData theme) {
     final doneRepos = _repos.where((r) => r['status'] == 'done').toList();
@@ -655,62 +707,86 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
                 );
               }),
               const SizedBox(width: 4),
-              IconButton(
-                icon: const Icon(Icons.close, size: 18),
-                tooltip: '关闭',
-                onPressed: () => setState(() => _showChat = false),
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                padding: EdgeInsets.zero,
-              ),
+              IconButton(icon: const Icon(Icons.close, size: 18), tooltip: '关闭', onPressed: () { setState(() => _showChat = false); _saveChatHistory(); }, constraints: const BoxConstraints(minWidth: 32, minHeight: 32), padding: EdgeInsets.zero),
             ]),
-            if (doneRepos.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Wrap(
-                  spacing: 6,
-                  runSpacing: 4,
-                  children: doneRepos.map((r) => Chip(
-                    avatar: const Icon(Icons.check_circle, size: 14, color: Colors.green),
-                    label: Text(r['id'] as String, style: const TextStyle(fontSize: 11)),
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    visualDensity: VisualDensity.compact,
-                    padding: EdgeInsets.zero,
-                  )).toList(),
-                ),
-              ),
-            if (doneRepos.isEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text('暂无已连接仓库', style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
-              ),
+            if (doneRepos.isNotEmpty) Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Wrap(spacing: 6, runSpacing: 4, children: doneRepos.map((r) => Chip(
+                avatar: const Icon(Icons.check_circle, size: 14, color: Colors.green),
+                label: Text(r['id'] as String, style: const TextStyle(fontSize: 11)),
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap, visualDensity: VisualDensity.compact, padding: EdgeInsets.zero,
+              )).toList()),
+            ),
+            if (doneRepos.isEmpty) Padding(padding: const EdgeInsets.only(top: 4), child: Text('暂无已连接仓库', style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline))),
           ]),
         ),
         Expanded(
-          child: _chatMessages.isEmpty
-              ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.code, size: 48, color: theme.colorScheme.outline.withValues(alpha: 0.5)), const SizedBox(height: 12), Text('问我关于代码的问题', style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.outline))]))
-              : ListView.builder(
-                  controller: _chatScrollCtrl, padding: const EdgeInsets.all(12),
-                  itemCount: _chatMessages.length + (_chatStreaming ? 1 : 0),
-                  itemBuilder: (ctx, i) {
-                    if (i == _chatMessages.length) return const Padding(padding: EdgeInsets.all(8), child: Align(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))));
-                    final msg = _chatMessages[i];
-                    final isUser = msg.role == 'user';
-                    return Align(
-                      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-                      child: Container(
-                        margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.85),
-                        decoration: BoxDecoration(color: isUser ? theme.colorScheme.primaryContainer : theme.colorScheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(12)),
-                        child: SelectableText(msg.content, style: theme.textTheme.bodyMedium),
-                      ),
-                    );
-                  },
-                ),
+          child: Stack(children: [
+            _chatMessages.isEmpty
+                ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.code, size: 48, color: theme.colorScheme.outline.withValues(alpha: 0.5)), const SizedBox(height: 12), Text('问我关于代码的问题', style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.outline))]))
+                : ListView.builder(
+                    controller: _chatScrollCtrl, padding: const EdgeInsets.all(12),
+                    itemCount: _chatMessages.length + (_chatStreaming ? 1 : 0),
+                    itemBuilder: (ctx, i) {
+                      if (i == _chatMessages.length) return const Padding(padding: EdgeInsets.all(8), child: Align(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))));
+                      final msg = _chatMessages[i];
+                      final isUser = msg.role == 'user';
+                      return Align(
+                        alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+                        child: Container(
+                          margin: const EdgeInsets.only(bottom: 8), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.85),
+                          decoration: BoxDecoration(color: isUser ? theme.colorScheme.primaryContainer : theme.colorScheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(12)),
+                          child: _buildChatMessageContent(msg, theme),
+                        ),
+                      );
+                    },
+                  ),
+            if (_showFileSearch)
+              Positioned(left: 12, right: 12, bottom: 60, child: Card(
+                elevation: 8, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Padding(padding: const EdgeInsets.all(8), child: TextField(
+                    controller: _fileSearchCtrl, autofocus: true,
+                    decoration: const InputDecoration(hintText: '搜索文件名...', border: InputBorder.none, isDense: true, prefixIcon: Icon(Icons.search, size: 18)),
+                    onChanged: _searchFilesForMention,
+                  )),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 200),
+                    child: ListView.builder(
+                      shrinkWrap: true, itemCount: _fileSearchResults.length,
+                      itemBuilder: (ctx, i) {
+                        final f = _fileSearchResults[i];
+                        return ListTile(
+                          dense: true,
+                          leading: Icon(_fileIcon(f['path'] as String), size: 16),
+                          title: Text((f['path'] as String).split('/').last, style: const TextStyle(fontSize: 13)),
+                          subtitle: Text('${f['repoId']} · ${f['path']}', style: const TextStyle(fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis),
+                          onTap: () {
+                            _chatInputCtrl.text += '[${f['repoId']}] ${f['path']}';
+                            setState(() { _showFileSearch = false; _fileSearchResults = []; });
+                            _fileSearchCtrl.clear();
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                ]),
+              )),
+          ]),
         ),
         Container(
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
           decoration: BoxDecoration(border: Border(top: BorderSide(color: theme.dividerColor.withValues(alpha: 0.2)))),
           child: Row(children: [
+            IconButton(
+              icon: const Icon(Icons.alternate_email, size: 20),
+              tooltip: '@文件',
+              onPressed: () { setState(() => _showFileSearch = !_showFileSearch); if (_showFileSearch) _fileSearchCtrl.clear(); },
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              padding: EdgeInsets.zero,
+            ),
+            const SizedBox(width: 4),
             Expanded(child: TextField(
               controller: _chatInputCtrl, maxLines: null,
               decoration: InputDecoration(hintText: '问我代码相关的问题...', contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10), border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none), filled: true, fillColor: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.4)),
@@ -723,6 +799,71 @@ class _GitHubScreenState extends ConsumerState<GitHubScreen> {
       ]),
     );
   }
+
+  // ==================== Chat Message Content ====================
+
+  Widget _buildChatMessageContent(_ChatMsg msg, ThemeData theme) {
+    final content = msg.content;
+    final segments = <Widget>[];
+    final parts = content.split(RegExp(r'(```[\s\S]*?```)'));
+    for (final part in parts) {
+      if (part.startsWith('```') && part.endsWith('```')) {
+        final code = part.substring(3, part.length - 3);
+        final lines = code.split('\n');
+        final lang = lines.first.trim();
+        final codeBody = lines.length > 1 ? lines.sublist(1).join('\n') : code;
+        segments.add(_buildCodeBlock(codeBody, lang, theme));
+      } else if (part.isNotEmpty) {
+        segments.add(_buildRichTextWithFileLinks(part, theme));
+      }
+    }
+    if (segments.isEmpty) segments.add(_buildRichTextWithFileLinks(content, theme));
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: segments);
+  }
+
+  Widget _buildCodeBlock(String code, String lang, ThemeData theme) {
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      decoration: BoxDecoration(color: theme.colorScheme.surface, borderRadius: BorderRadius.circular(8), border: Border.all(color: theme.colorScheme.outlineVariant.withValues(alpha: 0.3))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+        Row(children: [
+          Padding(padding: const EdgeInsets.only(left: 8), child: Text(lang.isNotEmpty ? lang : 'code', style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline))),
+          const Spacer(),
+          IconButton(icon: const Icon(Icons.copy, size: 14), tooltip: '复制', padding: const EdgeInsets.all(4), constraints: const BoxConstraints(), onPressed: () {
+            Clipboard.setData(ClipboardData(text: code));
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('代码已复制'), duration: Duration(seconds: 1)));
+          }),
+        ]),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.only(left: 8, right: 8, bottom: 8),
+          child: SelectableText(code, style: TextStyle(fontSize: 12, fontFamily: 'monospace', color: theme.colorScheme.onSurface)),
+        ),
+      ]),
+    );
+  }
+
+  Widget _buildRichTextWithFileLinks(String text, ThemeData theme) {
+    final pathRe = RegExp(r'\[(\S+?)\]\s+(\S+\.\w+)|(?<!\w)(lib/\S+\.\w+)|(?<!\w)(src/\S+\.\w+)|(?<!\w)(android/\S+\.\w+)|(?<!\w)(ios/\S+\.\w+)|(?<!\w)(test/\S+\.\w+)|(?<!\w)(web/\S+\.\w+)', caseSensitive: false);
+    final spans = <InlineSpan>[];
+    int pos = 0;
+    for (final m in pathRe.allMatches(text)) {
+      if (m.start > pos) spans.add(TextSpan(text: text.substring(pos, m.start)));
+      final repoId = m.group(1);
+      final filePath = m.group(2) ?? m.group(3) ?? m.group(4) ?? m.group(5) ?? m.group(6) ?? m.group(7) ?? '';
+      final displayPath = repoId != null ? '[$repoId] $filePath' : filePath;
+      spans.add(WidgetSpan(child: GestureDetector(
+        onTap: () => _openFileByPath(filePath),
+        child: Text(displayPath, style: TextStyle(color: theme.colorScheme.primary, decoration: TextDecoration.underline, fontSize: theme.textTheme.bodyMedium?.fontSize)),
+      )));
+      pos = m.end;
+    }
+    if (pos < text.length) spans.add(TextSpan(text: text.substring(pos)));
+    if (spans.isEmpty) return SelectableText(text, style: theme.textTheme.bodyMedium);
+    return RichText(text: TextSpan(children: spans, style: theme.textTheme.bodyMedium), softWrap: true);
+  }
+
+  // ==================== Icons & Syntax ====================
 
   IconData _fileIcon(String path) {
     final ext = path.split('.').last.toLowerCase();

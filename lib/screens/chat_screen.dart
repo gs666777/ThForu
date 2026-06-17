@@ -96,8 +96,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with RouteAware {
     _userScrolledUp = false;
     _scrollController.animateTo(
       0,
-      duration: const Duration(milliseconds: 200),
-      curve: Curves.easeOut,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOutCubic,
     );
   }
 
@@ -767,7 +767,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with RouteAware {
           if (_userScrolledUp)
             Positioned(
               right: 16,
-              bottom: 16,
+              bottom: 80,
               child: FloatingActionButton.small(
                 heroTag: 'scroll_to_bottom',
                 onPressed: _scrollToBottom,

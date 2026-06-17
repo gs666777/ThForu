@@ -148,7 +148,8 @@ class MessageBubble extends StatelessWidget {
       return _buildExpertResponse(context, theme);
     }
 
-    return Padding(
+    return RepaintBoundary(
+      child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       child: Row(
         mainAxisAlignment:
@@ -176,25 +177,42 @@ class MessageBubble extends StatelessWidget {
                     BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.78),
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                 decoration: BoxDecoration(
-                  color: isCurrentSearchMatch
-                      ? Colors.amber.withValues(alpha: 0.4)
+                  gradient: isCurrentSearchMatch
+                      ? LinearGradient(colors: [Colors.amber.withValues(alpha: 0.4), Colors.amber.withValues(alpha: 0.2)])
                       : isMatch
-                          ? Colors.amber.withValues(alpha: 0.15)
+                          ? LinearGradient(colors: [Colors.amber.withValues(alpha: 0.15), Colors.amber.withValues(alpha: 0.08)])
                           : isUser
-                              ? theme.colorScheme.primaryContainer
-                              : theme.colorScheme.surfaceContainerHighest,
+                              ? LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: [
+                                    theme.colorScheme.primaryContainer,
+                                    theme.colorScheme.primaryContainer.withValues(alpha: 0.7),
+                                  ],
+                                )
+                              : null,
+                  color: (!isUser && !isMatch && !isCurrentSearchMatch)
+                      ? const Color(0xFFF0F4F8)
+                      : null,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: isUser ? 0.06 : 0.04),
+                      blurRadius: 6,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
                   border: isCurrentSearchMatch
                       ? Border.all(color: Colors.amber, width: 2)
                       : null,
                   borderRadius: BorderRadius.only(
-                    topLeft: const Radius.circular(16),
-                    topRight: const Radius.circular(16),
+                    topLeft: const Radius.circular(18),
+                    topRight: const Radius.circular(18),
                     bottomLeft: isUser
-                        ? const Radius.circular(16)
+                        ? const Radius.circular(18)
                         : const Radius.circular(4),
                     bottomRight: isUser
                         ? const Radius.circular(4)
-                        : const Radius.circular(16),
+                        : const Radius.circular(18),
                   ),
                 ),
                 child: Column(
@@ -341,6 +359,7 @@ class MessageBubble extends StatelessWidget {
             ),
         ],
       ),
+    ),
     );
   }
 
